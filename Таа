@@ -1,0 +1,115 @@
+# meta developer: @vingln
+# scope: hikka_only
+# meta pic: https://example.com/logo.png
+# meta banner: https://example.com/banner.png
+
+import asyncio
+from asyncio import sleep
+from hikkatl.types import Message
+from .. import loader, utils
+
+__version__ = (1, 0, 2)
+
+@loader.tds
+class SpamGarantMod(loader.Module):
+    """Автоматический спам в чаты по условиям (43 сообщения / 10 минут)"""
+
+    strings = {
+        "name": "SpamGarant",
+        "ad_text": (
+            "🎯 НАКРУТКА ДЛЯ ВСЕХ ПЛАТФОРМ:\n"
+            "— Telegram, TikTok, ВКонтакте, Facebook, Instagram\n"
+            "Услуги: просмотры, реакции, подписчики, репосты, рефералы.\n"
+            "Писать сюда : @vingln"
+        )
+    }
+
+    def __init__(self):
+        self.config = loader.ModuleConfig(
+            loader.ConfigValue(
+                "chat1_id",
+                "https://t.me/TonTakeGarant",
+                "Первый чат (ссылка или ID). Срабатывает каждые 43 сообщения.",
+            ),
+            loader.ConfigValue(
+                "chat2_id",
+                "https://t.me/syndicate_garant",
+                "Второй чат. Срабатывает каждые 10 минут.",
+            ),
+            loader.ConfigValue(
+                "min_interval_minutes",
+                10,
+                "Интервал для второго чата (минуты).",
+            ),
+            loader.ConfigValue(
+                "messages_threshold",
+                43,
+                "Количество сообщений в первом чате для триггера.",
+            ),
+        )
+
+    async def client_ready(self, client, db):
+        self._client = client
+        self._msg_counter = 0
+        self._running = True
+        self._first_chat_id = await self._resolve_chat(self.config["chat1_id"])
+        self._second_chat_id = await self._resolve_chat(self.config["chat2_id"])
+        # Запускаем фоновую задачу
+        self._task = asyncio.create_task(self._timer_loop())
+        # НЕ отправляем сообщение через utils.answer – нет message
+        # Можем написать в лог (необязательно)
+        print("[SpamGarant] Модуль загружен и активен")
+
+    async def on_unload(self):
+        self._running = False
+        if hasattr(self, '_task') and self._task:
+            self._task.cancel()
+
+    async def watcher(self, message: Message):
+        """Считаем сообщения в первом чате."""
+        if not self._running:
+            return
+        if message.out:
+            return
+        chat_id = utils.get_chat_id(message)
+        if chat_id != self._first_chat_id:
+            return
+        self._msg_counter += 1
+        if self._msg_counter >= self.config["messages_threshold"]:
+            self._msg_counter = 0
+            await self._client.send_message(
+                self._first_chat_id,
+                self.strings["ad_text"]
+            )
+
+    async def _timer_loop(self):
+        """Отправка каждые N минут во второй чат."""
+        interval = self.config["min_interval_minutes"] * 60
+        while self._running:
+            await sleep(interval)
+            try:
+                await self._client.send_message(
+                    self._second_chat_id,
+                    self.strings["ad_text"]
+                )
+            except Exception as e:
+                print(f"[SpamGarant] Ошибка отправки: {e}")
+
+    async def _resolve_chat(self, identifier):
+        """Преобразует ссылку/юзернейм/ID в числовой chat_id."""
+        try:
+            if identifier.isdigit():
+                return int(identifier)
+            entity = await self._client.get_entity(identifier)
+            return utils.get_chat_id(entity)
+        except Exception:
+            return identifier
+
+    @loader.command()
+    async def spamstat(self, message: Message):
+        await utils.answer(message, f"📊 Сообщений в 1-м чате: {self._msg_counter} / {self.config['messages_threshold']}")
+
+    @loader.command()
+    async def spamreset(self, message: Message):
+        self._msg_counter = 0
+        await utils.answer(message, "🔄 Счётчик сброшен.")
