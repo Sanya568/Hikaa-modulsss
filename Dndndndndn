@@ -1,0 +1,145 @@
+# meta developer: @vingln
+# scope: hikka_only
+
+import asyncio
+from hikkatl.types import Message
+from .. import loader, utils
+
+__version__ = (1, 0, 4)
+
+@loader.tds
+class SpamGarantMod(loader.Module):
+    """Автоспам по ссылкам. Никаких ID."""
+
+    strings = {"name": "SpamGarant"}
+
+    def __init__(self):
+        self.config = loader.ModuleConfig(
+            loader.ConfigValue(
+                "chat1",
+                "https://t.me/TonTakeGarant",
+                "Первый чат (ссылка или @username). Каждые 43 сообщения.",
+            ),
+            loader.ConfigValue(
+                "chat2",
+                "https://t.me/syndicate_garant",
+                "Второй чат. Каждые 10 минут.",
+            ),
+            loader.ConfigValue(
+                "interval_min",
+                10,
+                "Интервал для второго чата (минуты).",
+                validator=loader.validators.Integer(),
+            ),
+            loader.ConfigValue(
+                "threshold",
+                43,
+                "Сколько сообщений нужно в первом чате.",
+                validator=loader.validators.Integer(),
+            ),
+            loader.ConfigValue(
+                "ad_text",
+                (
+                    "🎯 НАКРУТКА ДЛЯ ВСЕХ ПЛАТФОРМ:\n"
+                    "— Telegram, TikTok, ВКонтакте, Facebook, Instagram\n"
+                    "Услуги: просмотры, реакции, подписчики, репосты, рефералы.\n"
+                    "Писать сюда : @vingln"
+                ),
+                "Текст рекламы.",
+            ),
+        )
+
+    async def client_ready(self, client, db):
+        self._client = client
+        self._counter = 0
+        self._running = True
+
+        # Просто сохраняем переданные строки (ссылки/юзернеймы)
+        self.chat1_ref = self.config["chat1"]
+        self.chat2_ref = self.config["chat2"]
+
+        # Попробуем получить сущности и проверить участие
+        self.chat1_entity = await self._get_entity(self.chat1_ref)
+        self.chat2_entity = await self._get_entity(self.chat2_ref)
+
+        if self.chat1_entity:
+            print(f"[SpamGarant] Первый чат: {self.chat1_ref} (доступен)")
+        else:
+            print(f"[SpamGarant] НЕ МОГУ ДОСТУПИТЬСЯ к {self.chat1_ref}. Юзербот не в чате?")
+
+        if self.chat2_entity:
+            print(f"[SpamGarant] Второй чат: {self.chat2_ref} (доступен)")
+        else:
+            print(f"[SpamGarant] НЕ МОГУ ДОСТУПИТЬСЯ к {self.chat2_ref}")
+
+        # Запускаем таймер для второго чата
+        self._task = asyncio.create_task(self._timer_loop())
+
+    async def on_unload(self):
+        self._running = False
+        if hasattr(self, "_task") and self._task:
+            self._task.cancel()
+
+    async def _get_entity(self, ref):
+        """Пытается получить сущность по ссылке или юзернейму. Возвращает None, если не удалось."""
+        try:
+            return await self._client.get_entity(ref)
+        except Exception as e:
+            print(f"[SpamGarant] Ошибка get_entity({ref}): {e}")
+            return None
+
+    async def watcher(self, message: Message):
+        """Считает сообщения только в первом чате, если мы в нём."""
+        if not self._running:
+            return
+        if message.out:
+            return
+
+        # Проверяем, что сообщение из первого чата
+        # Сравниваем не по ID, а по самому объекту чата (или ссылке)
+        if not self.chat1_entity:
+            return  # нет доступа к чату
+        if message.chat_id != self.chat1_entity.id:
+            return
+
+        self._counter += 1
+        print(f"[SpamGarant] Счётчик: {self._counter}/{self.config['threshold']}")
+
+        if self._counter >= self.config["threshold"]:
+            self._counter = 0
+            await self._client.send_message(
+                self.chat1_entity,
+                self.config["ad_text"]
+            )
+            print("[SpamGarant] Отправил рекламу в первый чат")
+
+    async def _timer_loop(self):
+        """Отправка рекламы во второй чат каждые N минут."""
+        interval_sec = self.config["interval_min"] * 60
+        while self._running:
+            await asyncio.sleep(interval_sec)
+            if self.chat2_entity:
+                try:
+                    await self._client.send_message(
+                        self.chat2_entity,
+                        self.config["ad_text"]
+                    )
+                    print("[SpamGarant] Отправил рекламу во второй чат")
+                except Exception as e:
+                    print(f"[SpamGarant] Ошибка отправки во второй чат: {e}")
+
+    @loader.command()
+    async def spamstat(self, message: Message):
+        """Статус счётчика."""
+        await utils.answer(
+            message,
+            f"📊 Счётчик в первом чате: {self._counter} / {self.config['threshold']}\n"
+            f"Чат1 доступен: {self.chat1_entity is not None}\n"
+            f"Чат2 доступен: {self.chat2_entity is not None}"
+        )
+
+    @loader.command()
+    async def spamreset(self, message: Message):
+        """Сброс счётчика."""
+        self._counter = 0
+        await utils.answer(message, "🔄 Счётчик сброшен.")
