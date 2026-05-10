@@ -1,0 +1,130 @@
+# meta developer: @vingln
+# scope: hikka_only
+# meta pic: https://example.com/logo.png
+# meta banner: https://example.com/banner.png
+
+import asyncio  # <--- ДОБАВЛЕНА ЭТА СТРОКА
+from asyncio import sleep
+from datetime import datetime
+from hikkatl.types import Message
+from .. import loader, utils
+
+__version__ = (1, 0, 1)
+
+@loader.tds
+class SpamGarantMod(loader.Module):
+    """Автоматический спам в чаты по условиям (43 сообщения / 10 минут)"""
+
+    strings = {
+        "name": "SpamGarant",
+        "started": "✅ Модуль активирован. Спам включён.",
+        "stopped": "❌ Модуль остановлен.",
+        "target_chat_1": "TonTakeGarant",
+        "target_chat_2": "syndicate_garant",
+        "ad_text": (
+            "🎯 НАКРУТКА ДЛЯ ВСЕХ ПЛАТФОРМ:\n"
+            "— Telegram, TikTok, ВКонтакте, Facebook, Instagram\n"
+            "Услуги: просмотры, реакции, подписчики, репосты, рефералы.\n"
+            "Писать сюда : @vingln"
+        )
+    }
+
+    def __init__(self):
+        self.config = loader.ModuleConfig(
+            loader.ConfigValue(
+                "chat1_id",
+                "https://t.me/TonTakeGarant",
+                "Первый чат (ссылка или ID). Срабатывает каждые 43 сообщения.",
+                validator=loader.validators.String(),
+            ),
+            loader.ConfigValue(
+                "chat2_id",
+                "https://t.me/syndicate_garant",
+                "Второй чат. Срабатывает каждые 10 минут.",
+                validator=loader.validators.String(),
+            ),
+            loader.ConfigValue(
+                "min_interval_minutes",
+                10,
+                "Интервал для второго чата (минуты).",
+                validator=loader.validators.Integer(),
+            ),
+            loader.ConfigValue(
+                "messages_threshold",
+                43,
+                "Количество сообщений в первом чате для триггера.",
+                validator=loader.validators.Integer(),
+            ),
+        )
+
+    async def on_load(self):
+        self._msg_counter = 0
+        self._running = True
+        self._task = None
+        self._first_chat_id = None
+        self._second_chat_id = None
+
+    async def client_ready(self, client, db):
+        self._client = client
+        self._first_chat_id = await self.resolve_chat(self.config["chat1_id"])
+        self._second_chat_id = await self.resolve_chat(self.config["chat2_id"])
+        self._task = asyncio.ensure_future(self._timer_loop())
+        await utils.answer(message=None, text=self.strings("started"))  # fixed
+
+    async def on_unload(self):
+        self._running = False
+        if self._task:
+            self._task.cancel()
+        # Не пытаемся отправить сообщение при выгрузке, иначе ошибка
+
+    async def watcher(self, message: Message):
+        if not self._running:
+            return
+        if message.out:
+            return
+        chat_id = utils.get_chat_id(message)
+        if chat_id != self._first_chat_id:
+            return
+        self._msg_counter += 1
+        if self._msg_counter >= self.config["messages_threshold"]:
+            self._msg_counter = 0
+            await self._client.send_message(
+                self._first_chat_id,
+                self.strings("ad_text")
+            )
+
+    async def _timer_loop(self):
+        interval = self.config["min_interval_minutes"] * 60
+        while self._running:
+            await sleep(interval)
+            try:
+                await self._client.send_message(
+                    self._second_chat_id,
+                    self.strings("ad_text")
+                )
+            except Exception as e:
+                print(f"[SpamGarant] Ошибка: {e}")
+
+    async def resolve_chat(self, identifier):
+        try:
+            if identifier.isdigit():
+                return int(identifier)
+            if identifier.startswith("https://t.me/"):
+                entity = await self._client.get_entity(identifier)
+            else:
+                entity = await self._client.get_entity(identifier)
+            return utils.get_chat_id(entity)
+        except Exception:
+            return identifier
+
+    @loader.command()
+    async def spamstat(self, message: Message):
+        await utils.answer(
+            message,
+            f"📊 Сообщений в 1-м чате: {self._msg_counter} / {self.config['messages_threshold']}"
+        )
+
+    @loader.command()
+    async def spamreset(self, message: Message):
+        self._msg_counter = 0
+        await utils.answer(message, "🔄 Счётчик сброшен.")
